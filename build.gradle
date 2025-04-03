@@ -16,15 +16,15 @@ ext {
     mavenPassword = project.hasProperty('mavenPassword') ? project.mavenPassword : jfrogApiKey
 }
 repositories {
-    //Uncomment mavenLocal to publish artifacts to local maven
-    //mavenLocal()
+    // Uncomment mavenLocal to publish artifacts to local maven
+    mavenLocal()
     mavenCentral()
 }
 
 java {
     toolchain {
         //Used java version 11 for enabling supported cipher suites for enabling KTLS
-        languageVersion = JavaLanguageVersion.of(11)
+        languageVersion = JavaLanguageVersion.of(17)
     }
 }
 
@@ -34,9 +34,15 @@ dependencies {
     testImplementation 'org.bouncycastle:bcpkix-jdk18on:1.71.1'
     testImplementation 'commons-codec:commons-codec:1.15'
     testRuntimeOnly 'org.junit.jupiter:junit-jupiter-engine:5.7.0'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 }
 
 test {
+    jvmArgs (
+        '--add-opens', 'java.base/sun.security.ssl=ALL-UNNAMED',
+        '--add-opens', 'java.base/sun.nio.ch=ALL-UNNAMED',
+        '--add-opens', 'java.base/java.io=ALL-UNNAMED'
+    )
     useJUnitPlatform()
 }
 
@@ -49,8 +55,8 @@ sourceSets {
 }
 
 compileJava {
-    sourceCompatibility = '1.8'
-    targetCompatibility = '1.8'
+    sourceCompatibility = '8'
+    targetCompatibility = '8'
     options.compilerArgs += ["-h", file("src/main/include/jni_generated")]
 }
 
