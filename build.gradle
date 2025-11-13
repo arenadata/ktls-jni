@@ -4,20 +4,20 @@ plugins {
     id 'maven-publish'
 }
 
-group 'com.linkedin.ktls'
+group 'io.arenadata.ktls'
+
 ext {
+    publishUsername = System.getenv('PUBLISH_USERNAME')
+    publishPassword = System.getenv('PUBLISH_PASSWORD')
 
-    jfrogUsername = System.getenv('JFROG_USERNAME')
-    jfrogApiKey = System.getenv('JFROG_API_KEY')
-
-    // By default, publish to JFrog.
-    mavenUrl = project.hasProperty('mavenUrl') ? project.mavenUrl : jfrogRepoUrl
-    mavenUsername = project.hasProperty('mavenUsername') ? project.mavenUsername : jfrogUsername
-    mavenPassword = project.hasProperty('mavenPassword') ? project.mavenPassword : jfrogApiKey
+    mavenUrl = project.hasProperty('mavenUrl') ? project.mavenUrl : 'https://maven.pkg.github.com/arenadata/ktls-jni'
+    mavenUsername = project.hasProperty('mavenUsername') ? project.mavenUsername : publishUsername
+    mavenPassword = project.hasProperty('mavenPassword') ? project.mavenPassword : publishPassword
 }
+
 repositories {
     // Uncomment mavenLocal to publish artifacts to local maven
-    mavenLocal()
+    // mavenLocal()
     mavenCentral()
 }
 
@@ -96,6 +96,7 @@ tasks.withType(Test) {
     systemProperty "java.library.path", "build/natives/lib"
     testLogging.showStandardStreams = true
 }
+
 
 publishing {
     repositories {
