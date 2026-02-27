@@ -2,6 +2,7 @@
 
 #include <cstring>
 #include <cstdlib>
+#include <cerrno>
 #include <vector>
 
 #ifdef __linux__
@@ -25,14 +26,20 @@ const char* CHACHA20_POLY1305_CIPHER_NAME = "CHACHA20_POLY1305";
 
 
 /**
- * This method enables Kernel TLS for a specified socket by setting TCP_ULP to tls
+ * This method enables Kernel TLS for a specified socket by setting TCP_ULP to tls.
+ * If TLS ULP is already installed on the socket (EEXIST), this is treated as success
+ * to allow enabling both TX and RX on the same socket.
  * This method is available only when NO_KTLS flag is not set.
  *
  * @param socketFd file descriptor on which kTLS has to be enabled.
  */
 #ifndef NO_KTLS
 int startKernelTls(jint socketFd) {
-    return setsockopt(socketFd, SOL_TCP, TCP_ULP, "tls", sizeof("tls"));
+    int ret = setsockopt(socketFd, SOL_TCP, TCP_ULP, "tls", sizeof("tls"));
+    if (ret != 0 && errno == EEXIST) {
+        return 0;
+    }
+    return ret;
 }
 
 /**
@@ -182,6 +189,105 @@ JNIEXPORT jint JNICALL Java_com_linkedin_ktls_KernelTLSNativeHelper_enableKernel
     if(result_iv == -1 || result_key == -1 || result_salt == -1 || result_rec_seq == -1)
       return com_linkedin_ktls_KernelTLSNativeHelper_BUFFER_OVERRUN;
     return enableTlsWithCryptoInfo(socketFd, true, &crypto_info, sizeof(crypto_info));
+#endif
+}
+
+/**
+ * This method is used to enable Kernel TLS for receiving data using AES 128 GCM cipher.
+ * This method always returns an error if the NO_KTLS preprocessor flag is set at build time.
+ *
+ * @param env The JNI environment pointer.
+ * @param self reference to the Java KernelTLSNativeHelper object
+ * @param socketFd file descriptor of the socket to enable TLS
+ * @param versionCode The version code of the TLS protocol to use
+ * @param iv the Initialization Vector for AES decryption
+ * @param key the decryption key for AES decryption
+ * @param salt the salt value for AES decryption
+ * @param rec_seq the recent sequence number for AES decryption
+ * @return 0 on success, or an error code indicating the specific failure reason.
+ */
+JNIEXPORT jint JNICALL Java_com_linkedin_ktls_KernelTLSNativeHelper_enableKernelTlsForReceive_1AES_1128_1GCM(
+    JNIEnv *env, jobject self, jint socketFd, jint versionCode,
+    jbyteArray iv, jbyteArray key, jbyteArray salt, jbyteArray rec_seq) {
+#ifdef NO_KTLS
+    return com_linkedin_ktls_KernelTLSNativeHelper_UNSUPPORTED_OPERATING_SYSTEM;
+#else
+    struct tls12_crypto_info_aes_gcm_128 crypto_info;
+    crypto_info.info.version = versionCode;
+    crypto_info.info.cipher_type = TLS_CIPHER_AES_GCM_128;
+    int result_iv = copyArray(env, iv, crypto_info.iv, sizeof(crypto_info.iv));
+    int result_key = copyArray(env, key, crypto_info.key, sizeof(crypto_info.key));
+    int result_salt = copyArray(env, salt, crypto_info.salt, sizeof(crypto_info.salt));
+    int result_rec_seq = copyArray(env, rec_seq, crypto_info.rec_seq, sizeof(crypto_info.rec_seq));
+    if(result_iv == -1 || result_key == -1 || result_salt == -1 || result_rec_seq == -1)
+      return com_linkedin_ktls_KernelTLSNativeHelper_BUFFER_OVERRUN;
+    return enableTlsWithCryptoInfo(socketFd, false, &crypto_info, sizeof(crypto_info));
+#endif
+}
+
+/**
+ * This method is used to enable Kernel TLS for receiving data using AES 256 GCM cipher.
+ * This method always returns an error if the NO_KTLS preprocessor flag is set at build time.
+ *
+ * @param env The JNI environment pointer.
+ * @param self reference to the Java KernelTLSNativeHelper object
+ * @param socketFd file descriptor of the socket to enable TLS
+ * @param versionCode The version code of the TLS protocol to use
+ * @param iv the Initialization Vector for AES decryption
+ * @param key the decryption key for AES decryption
+ * @param salt the salt value for AES decryption
+ * @param rec_seq the recent sequence number for AES decryption
+ * @return 0 on success, or an error code indicating the specific failure reason.
+ */
+JNIEXPORT jint JNICALL Java_com_linkedin_ktls_KernelTLSNativeHelper_enableKernelTlsForReceive_1AES_1256_1GCM(
+    JNIEnv *env, jobject self, jint socketFd, jint versionCode,
+    jbyteArray iv, jbyteArray key, jbyteArray salt, jbyteArray rec_seq) {
+#ifdef NO_KTLS
+    return com_linkedin_ktls_KernelTLSNativeHelper_UNSUPPORTED_OPERATING_SYSTEM;
+#else
+    struct tls12_crypto_info_aes_gcm_256 crypto_info;
+    crypto_info.info.version = versionCode;
+    crypto_info.info.cipher_type = TLS_CIPHER_AES_GCM_256;
+    int result_iv = copyArray(env, iv, crypto_info.iv, sizeof(crypto_info.iv));
+    int result_key = copyArray(env, key, crypto_info.key, sizeof(crypto_info.key));
+    int result_salt = copyArray(env, salt, crypto_info.salt, sizeof(crypto_info.salt));
+    int result_rec_seq = copyArray(env, rec_seq, crypto_info.rec_seq, sizeof(crypto_info.rec_seq));
+    if(result_iv == -1 || result_key == -1 || result_salt == -1 || result_rec_seq == -1)
+      return com_linkedin_ktls_KernelTLSNativeHelper_BUFFER_OVERRUN;
+    return enableTlsWithCryptoInfo(socketFd, false, &crypto_info, sizeof(crypto_info));
+#endif
+}
+
+/**
+ * This method is used to enable Kernel TLS for receiving data using CHACHA20_POLY1305 cipher.
+ * This method always returns an error if the NO_KTLS preprocessor flag is set at build time.
+ *
+ * @param env The JNI environment pointer.
+ * @param self reference to the Java KernelTLSNativeHelper object
+ * @param socketFd file descriptor of the socket to enable TLS
+ * @param versionCode The version code of the TLS protocol to use
+ * @param iv the Initialization Vector for CHACHA20_POLY1305 decryption
+ * @param key the decryption key for CHACHA20_POLY1305 decryption
+ * @param salt the salt value for CHACHA20_POLY1305 decryption
+ * @param rec_seq the recent sequence number for CHACHA20_POLY1305 decryption
+ * @return 0 on success, or an error code indicating the specific failure reason.
+ */
+JNIEXPORT jint JNICALL Java_com_linkedin_ktls_KernelTLSNativeHelper_enableKernelTlsForReceive_1CHACHA20_1POLY1305(
+    JNIEnv *env, jobject self, jint socketFd, jint versionCode,
+    jbyteArray iv, jbyteArray key, jbyteArray salt, jbyteArray rec_seq) {
+#ifdef NO_KTLS
+    return com_linkedin_ktls_KernelTLSNativeHelper_UNSUPPORTED_OPERATING_SYSTEM;
+#else
+    struct tls12_crypto_info_chacha20_poly1305 crypto_info;
+    crypto_info.info.version = versionCode;
+    crypto_info.info.cipher_type = TLS_CIPHER_CHACHA20_POLY1305;
+    int result_iv = copyArray(env, iv, crypto_info.iv, sizeof(crypto_info.iv));
+    int result_key = copyArray(env, key, crypto_info.key, sizeof(crypto_info.key));
+    int result_salt = copyArray(env, salt, crypto_info.salt, sizeof(crypto_info.salt));
+    int result_rec_seq = copyArray(env, rec_seq, crypto_info.rec_seq, sizeof(crypto_info.rec_seq));
+    if(result_iv == -1 || result_key == -1 || result_salt == -1 || result_rec_seq == -1)
+      return com_linkedin_ktls_KernelTLSNativeHelper_BUFFER_OVERRUN;
+    return enableTlsWithCryptoInfo(socketFd, false, &crypto_info, sizeof(crypto_info));
 #endif
 }
 

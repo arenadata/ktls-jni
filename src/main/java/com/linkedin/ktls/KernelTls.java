@@ -41,6 +41,19 @@ public class KernelTls {
   }
 
   /**
+   * This method is used to call the KernelTLSNativeHelper enableKernelTlsForReceive method
+   * after extracting the receive-side TlsParameters.
+   *
+   * @param engine SSLEngine object used to extract the receive-side TLSParameters
+   * @param socketChannel SocketChannel object passed to KernelTLSNativeHelper
+   * @throws KTLSEnableFailedException failed to enable ktls
+   */
+  public void enableKernelTlsForReceive(SSLEngine engine, SocketChannel socketChannel) throws KTLSEnableFailedException {
+    final TlsParameters tlsParameters = extractor.extractForReceive(engine);
+    kernelTLSNativeHelper.enableKernelTlsForReceive(socketChannel, tlsParameters);
+  }
+
+  /**
    * This method is a wrapper on top of the corresponding method in KernelTLSNativeHelper
    * to closeNotify a socket channel.
    *

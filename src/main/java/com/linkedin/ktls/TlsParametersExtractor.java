@@ -23,6 +23,7 @@ class TlsParametersExtractor {
 
   /**
    * This method is used to invoke the respective extractor method based on TLS protocol version supported.
+   * Extracts the TLS parameters for the send (write) direction.
    * Note that this method is using Java reflection to extract the private fields
    * associated with a SSLEngine object and therefore is fragile and might break in future JAVA versions.
    * It has been tested on MSFT JDK 11 and linux kernel versions 5.4.222, 5.15.111.
@@ -37,6 +38,28 @@ class TlsParametersExtractor {
       return extractForJdkWithTLS1_3Support(sslEngine);
     } catch (NoSuchFieldException e) {
       return extractForJdkWithoutTLS1_3Support(sslEngine);
+    } catch (Exception e) {
+      throw new KTLSEnableFailedException(
+          "Error in getting TLS parameters from SSLEngine; Java version not supported", e);
+    }
+  }
+
+  /**
+   * This method extracts TLS parameters for the receive (read) direction from the SSLEngine.
+   * Note that this method is using Java reflection to extract the private fields
+   * associated with a SSLEngine object and therefore is fragile and might break in future JAVA versions.
+   * It has been tested on MSFT JDK 11 and linux kernel versions 5.4.222, 5.15.111.
+   *
+   * @param sslEngine SSLEngine object
+   * @return TlsParameters for the receive direction
+   * @throws KTLSEnableFailedException failed to extract ktls parameters
+   */
+  public TlsParameters extractForReceive(SSLEngine sslEngine) throws KTLSEnableFailedException {
+    try {
+      ReflectionUtils.getValueAtField(getSslClass("SSLEngineImpl"), "conContext", sslEngine);
+      return extractForReceiveJdkWithTLS1_3Support(sslEngine);
+    } catch (NoSuchFieldException e) {
+      return extractForReceiveJdkWithoutTLS1_3Support(sslEngine);
     } catch (Exception e) {
       throw new KTLSEnableFailedException(
           "Error in getting TLS parameters from SSLEngine; Java version not supported", e);
@@ -204,6 +227,118 @@ class TlsParametersExtractor {
         return new TLS13Aes256GcmExtractor(protocolVersion, cipherSuite);
       } else if (cipherSuite.symmetricCipher == SymmetricCipher.CHACHA20_POLY1305) {
         return new TLS13CC20P1305Extractor(protocolVersion, cipherSuite);
+      }
+    }
+    throw new IllegalStateException("Invalid protocolId and cipherSuiteId");
+  }
+
+  /**
+   * This method is used to invoke the respective extractor method for the receive direction
+   * when TLSv1.3 support is not present.
+   *
+   * @param sslEngine SSLEngine object
+   * @return TlsParameters for the receive direction
+   * @throws KTLSEnableFailedException failed to extract ktls parameters
+   */
+  private TlsParameters extractForReceiveJdkWithoutTLS1_3Support(SSLEngine sslEngine)
+      throws KTLSEnableFailedException {
+    try {
+      final Object sslSession = ReflectionUtils.getValueAtField(getSslClass("SSLEngineImpl"), "sess", sslEngine);
+      final Object protocolVersionInternal =
+          ReflectionUtils.getValueAtField(getSslClass("SSLSessionImpl"), "protocolVersion", sslSession);
+      final int protocolId =
+          (int) ReflectionUtils.getValueAtField(getSslClass("ProtocolVersion"), "v", protocolVersionInternal);
+
+      final Object cipherSuiteInternal =
+          ReflectionUtils.getValueAtField(getSslClass("SSLSessionImpl"), "cipherSuite", sslSession);
+      final int cipherSuiteId =
+          (int) ReflectionUtils.getValueAtField(getSslClass("CipherSuite"), "id", cipherSuiteInternal);
+
+      ProtocolVersion protocolVersion = ProtocolVersion.fromCode(protocolId);
+      CipherSuite cipherSuite = CipherSuite.fromCode(cipherSuiteId);
+
+      if (isCipherSuiteUnsupported(protocolVersion, cipherSuite)) {
+        throw new KTLSEnableFailedException(String.format(
+            "Cipher suite %s with protocol %s is not supported for kernel TLS.", cipherSuiteId, protocolId));
+      }
+
+      final Object authenticator =
+          ReflectionUtils.getValueAtField(getSslClass("SSLEngineImpl"), "readAuthenticator", sslEngine);
+      final Object cipherBox =
+          ReflectionUtils.getValueAtField(getSslClass("SSLEngineImpl"), "readCipher", sslEngine);
+      return extractParametersV1AES_GCM(protocolVersion, cipherSuite, cipherBox, authenticator);
+    } catch (Exception e) {
+      throw new KTLSEnableFailedException("Error during using reflection to get TLS parameters from SSLEngine", e);
+    }
+  }
+
+  /**
+   * This method is used to invoke the respective extractor method for the receive direction
+   * when TLSv1.3 support is present.
+   *
+   * @param sslEngine SSLEngine
+   * @return TlsParameters for the receive direction
+   * @throws KTLSEnableFailedException failed to extract ktls parameters
+   */
+  private TlsParameters extractForReceiveJdkWithTLS1_3Support(SSLEngine sslEngine)
+      throws KTLSEnableFailedException {
+    try {
+      final Object transportContext =
+          ReflectionUtils.getValueAtField(getSslClass("SSLEngineImpl"), "conContext", sslEngine);
+      final Object sslSession =
+          ReflectionUtils.getValueAtField(getSslClass("TransportContext"), "conSession", transportContext);
+
+      final Object protocolVersionInternal =
+          ReflectionUtils.getValueAtField(getSslClass("SSLSessionImpl"), "protocolVersion", sslSession);
+      final int protocolId =
+          (int) ReflectionUtils.getValueAtField(getSslClass("ProtocolVersion"), "id", protocolVersionInternal);
+
+      final Object cipherSuiteInternal =
+          ReflectionUtils.getValueAtField(getSslClass("SSLSessionImpl"), "cipherSuite", sslSession);
+      final int cipherSuiteId =
+          (int) ReflectionUtils.getValueAtField(getSslClass("CipherSuite"), "id", cipherSuiteInternal);
+
+      ProtocolVersion protocolVersion = ProtocolVersion.fromCode(protocolId);
+      CipherSuite cipherSuite = CipherSuite.fromCode(cipherSuiteId);
+
+      if (isCipherSuiteUnsupported(protocolVersion, cipherSuite)) {
+        throw new KTLSEnableFailedException(String.format(
+            "Cipher suite %s with protocol %s is not supported for kernel TLS.", cipherSuiteId, protocolId));
+      }
+      final Object inputRecord =
+          ReflectionUtils.getValueAtField(getSslClass("TransportContext"), "inputRecord", transportContext);
+      final Object readCipher =
+          ReflectionUtils.getValueAtField(getSslClass("InputRecord"), "readCipher", inputRecord);
+      final V2ReadExtractor v2ReadExtractor = buildV2ReadExtractor(protocolVersion, cipherSuite);
+      return v2ReadExtractor.extract(readCipher);
+    } catch (Exception e) {
+      throw new KTLSEnableFailedException("Error during using reflection to get TLS parameters from SSLEngine", e);
+    }
+  }
+
+  /**
+   * This builder method builds the appropriate read-side extractor based on cipher suite and protocol version.
+   *
+   * @param protocolVersion ProtocolVersion
+   * @param cipherSuite CipherSuite
+   * @return V2ReadExtractor
+   */
+  private V2ReadExtractor buildV2ReadExtractor(ProtocolVersion protocolVersion, CipherSuite cipherSuite) {
+    if (protocolVersion == ProtocolVersion.TLS_1_2) {
+      if (cipherSuite.symmetricCipher == SymmetricCipher.AES_GCM_128) {
+        return new TLS12Aes128GcmReadExtractor(protocolVersion, cipherSuite);
+      } else if (cipherSuite.symmetricCipher == SymmetricCipher.AES_GCM_256) {
+        return new TLS12Aes256GcmReadExtractor(protocolVersion, cipherSuite);
+      } else if (cipherSuite.symmetricCipher == SymmetricCipher.CHACHA20_POLY1305) {
+        return new TLS12CC20P1305ReadExtractor(protocolVersion, cipherSuite);
+      }
+    } else if (protocolVersion == ProtocolVersion.TLS_1_3) {
+      if (cipherSuite.symmetricCipher == SymmetricCipher.AES_GCM_128) {
+        return new TLS13Aes128GcmReadExtractor(protocolVersion, cipherSuite);
+      } else if (cipherSuite.symmetricCipher == SymmetricCipher.AES_GCM_256) {
+        return new TLS13Aes256GcmReadExtractor(protocolVersion, cipherSuite);
+      } else if (cipherSuite.symmetricCipher == SymmetricCipher.CHACHA20_POLY1305) {
+        return new TLS13CC20P1305ReadExtractor(protocolVersion, cipherSuite);
       }
     }
     throw new IllegalStateException("Invalid protocolId and cipherSuiteId");
@@ -399,6 +534,196 @@ class TlsParametersExtractor {
     public TLS13CC20P1305Extractor(ProtocolVersion protocolVersion, CipherSuite cipherSuite) {
       super(protocolVersion, cipherSuite,
           getSslClass("SSLCipher$T13CC20P1305WriteCipherGenerator$CC20P1305WriteCipher"));
+    }
+  }
+
+  /**
+   * Interface for defining the methods that will be implemented for extracting TLS Parameters
+   * from the receive (read) cipher.
+   */
+  interface V2ReadExtractor {
+    default byte[] extractSequenceNumber(Object readCipher)
+        throws ClassNotFoundException, InvocationTargetException, NoSuchMethodException, IllegalAccessException,
+               NoSuchFieldException {
+      Object authenticator = ReflectionUtils.getValueAtField(
+          getSslClass("SSLCipher$SSLReadCipher"), "authenticator", readCipher);
+      return (byte[]) ReflectionUtils.getValueAtMethod(
+          getSslClass("Authenticator"), "sequenceNumber", authenticator);
+    }
+
+    TlsParameters extract(Object readCipher)
+        throws ClassNotFoundException, NoSuchFieldException, IllegalAccessException, InvocationTargetException,
+               NoSuchMethodException;
+  }
+
+  /**
+   * The class defines extractor methods for the receive direction with TLSv1.2 GCM cipher suites.
+   */
+  private static abstract class TLS12GcmReadExtractor implements V2ReadExtractor {
+    private final int keySize;
+    private final ProtocolVersion protocolVersion;
+    private final CipherSuite cipherSuite;
+
+    public TLS12GcmReadExtractor(ProtocolVersion protocolVersion, CipherSuite cipherSuite, int keySize) {
+      this.protocolVersion = protocolVersion;
+      this.cipherSuite = cipherSuite;
+      this.keySize = keySize;
+    }
+
+    @Override
+    public TlsParameters extract(Object readCipher)
+        throws ClassNotFoundException, NoSuchFieldException, IllegalAccessException, InvocationTargetException,
+               NoSuchMethodException {
+      byte[] salt = (byte[]) ReflectionUtils.getValueAtField(
+          getSslClass("SSLCipher$T12GcmReadCipherGenerator$GcmReadCipher"), "fixedIv", readCipher);
+      assert salt.length == GCM_SALT_SIZE;
+
+      Key readSecret = (Key) ReflectionUtils.getValueAtField(
+          getSslClass("SSLCipher$T12GcmReadCipherGenerator$GcmReadCipher"), "key", readCipher);
+      byte[] key = readSecret.getEncoded();
+      assert key.length == keySize;
+
+      byte[] sequenceNumber = extractSequenceNumber(readCipher);
+      assert sequenceNumber.length == SEQ_NUMBER_SIZE;
+
+      return new TlsParameters(
+          protocolVersion, cipherSuite.symmetricCipher, new byte[GCM_IV_SIZE], key, salt, sequenceNumber);
+    }
+  }
+
+  /**
+   * This class is used to construct the read extractor for AES128GCM cipher suites with TLSv1.2 support.
+   */
+  private static class TLS12Aes128GcmReadExtractor extends TLS12GcmReadExtractor {
+    private static final int KEY_SIZE = 16;
+    public TLS12Aes128GcmReadExtractor(ProtocolVersion protocolVersion, CipherSuite cipherSuite) {
+      super(protocolVersion, cipherSuite, KEY_SIZE);
+    }
+  }
+
+  /**
+   * This class is used to construct the read extractor for AES256GCM cipher suites with TLSv1.2 support.
+   */
+  private static class TLS12Aes256GcmReadExtractor extends TLS12GcmReadExtractor {
+    private static final int KEY_SIZE = 32;
+    public TLS12Aes256GcmReadExtractor(ProtocolVersion protocolVersion, CipherSuite cipherSuite) {
+      super(protocolVersion, cipherSuite, KEY_SIZE);
+    }
+  }
+
+  /**
+   * The class defines extractor methods for the receive direction with TLSv1.3 GCM cipher suites.
+   */
+  private static abstract class TLS13GcmReadExtractor implements V2ReadExtractor {
+    private final int keySize;
+    private final ProtocolVersion protocolVersion;
+    private final CipherSuite cipherSuite;
+
+    public TLS13GcmReadExtractor(ProtocolVersion protocolVersion, CipherSuite cipherSuite, int keySize) {
+      this.protocolVersion = protocolVersion;
+      this.cipherSuite = cipherSuite;
+      this.keySize = keySize;
+    }
+
+    @Override
+    public TlsParameters extract(Object readCipher)
+        throws ClassNotFoundException, NoSuchFieldException, IllegalAccessException, InvocationTargetException,
+               NoSuchMethodException {
+      byte[] fullIv = (byte[]) ReflectionUtils.getValueAtField(
+          getSslClass("SSLCipher$T13GcmReadCipherGenerator$GcmReadCipher"), "iv", readCipher);
+      assert fullIv.length == GCM_SALT_SIZE + GCM_IV_SIZE;
+      byte[] salt = Arrays.copyOf(fullIv, GCM_SALT_SIZE);
+      byte[] iv = new byte[GCM_IV_SIZE];
+      System.arraycopy(fullIv, GCM_SALT_SIZE, iv, 0, GCM_IV_SIZE);
+
+      Key readSecret = (Key) ReflectionUtils.getValueAtField(
+          getSslClass("SSLCipher$T13GcmReadCipherGenerator$GcmReadCipher"), "key", readCipher);
+      byte[] key = readSecret.getEncoded();
+      assert key.length == keySize;
+
+      byte[] sequenceNumber = extractSequenceNumber(readCipher);
+      assert sequenceNumber.length == SEQ_NUMBER_SIZE;
+
+      return new TlsParameters(protocolVersion, cipherSuite.symmetricCipher, iv, key, salt, sequenceNumber);
+    }
+  }
+
+  /**
+   * This class is used to construct the read extractor for AES128GCM cipher suites with TLSv1.3 support.
+   */
+  private static class TLS13Aes128GcmReadExtractor extends TLS13GcmReadExtractor {
+    private static final int KEY_SIZE = 16;
+    public TLS13Aes128GcmReadExtractor(ProtocolVersion protocolVersion, CipherSuite cipherSuite) {
+      super(protocolVersion, cipherSuite, KEY_SIZE);
+    }
+  }
+
+  /**
+   * This class is used to construct the read extractor for AES256GCM cipher suites with TLSv1.3 support.
+   */
+  private static class TLS13Aes256GcmReadExtractor extends TLS13GcmReadExtractor {
+    private static final int KEY_SIZE = 32;
+    public TLS13Aes256GcmReadExtractor(ProtocolVersion protocolVersion, CipherSuite cipherSuite) {
+      super(protocolVersion, cipherSuite, KEY_SIZE);
+    }
+  }
+
+  /**
+   * The class defines extractor methods for the receive direction with CHACHA20_POLY1305 cipher suites.
+   */
+  private static abstract class CC20P1305ReadExtractor implements V2ReadExtractor {
+    private static final int SALT_SIZE = 0;
+    private static final int IV_SIZE = 12;
+    private static final int KEY_SIZE = 32;
+
+    private final ProtocolVersion protocolVersion;
+    private final CipherSuite cipherSuite;
+    private final String readCipherClassName;
+
+    public CC20P1305ReadExtractor(ProtocolVersion protocolVersion, CipherSuite cipherSuite, String readCipherClassName) {
+      this.protocolVersion = protocolVersion;
+      this.cipherSuite = cipherSuite;
+      this.readCipherClassName = readCipherClassName;
+    }
+
+    @Override
+    public TlsParameters extract(Object readCipher)
+        throws ClassNotFoundException, NoSuchFieldException, IllegalAccessException, InvocationTargetException,
+               NoSuchMethodException {
+      byte[] fullIv = (byte[]) ReflectionUtils.getValueAtField(readCipherClassName, "iv", readCipher);
+      assert fullIv.length == SALT_SIZE + IV_SIZE;
+      byte[] salt = Arrays.copyOf(fullIv, SALT_SIZE);
+      byte[] iv = new byte[IV_SIZE];
+      System.arraycopy(fullIv, SALT_SIZE, iv, 0, IV_SIZE);
+
+      Key readSecret = (Key) ReflectionUtils.getValueAtField(readCipherClassName, "key", readCipher);
+      byte[] key = readSecret.getEncoded();
+      assert key.length == KEY_SIZE;
+
+      byte[] sequenceNumber = extractSequenceNumber(readCipher);
+      assert sequenceNumber.length == SEQ_NUMBER_SIZE;
+
+      return new TlsParameters(protocolVersion, cipherSuite.symmetricCipher, iv, key, salt, sequenceNumber);
+    }
+  }
+
+  /**
+   * This class is used to construct the read extractor for CHACHA20_POLY1305 cipher suites with TLSv1.2 support.
+   */
+  private static class TLS12CC20P1305ReadExtractor extends CC20P1305ReadExtractor {
+    public TLS12CC20P1305ReadExtractor(ProtocolVersion protocolVersion, CipherSuite cipherSuite) {
+      super(protocolVersion, cipherSuite,
+          getSslClass("SSLCipher$T12CC20P1305ReadCipherGenerator$CC20P1305ReadCipher"));
+    }
+  }
+
+  /**
+   * This class is used to construct the read extractor for CHACHA20_POLY1305 cipher suites with TLSv1.3 support.
+   */
+  private static class TLS13CC20P1305ReadExtractor extends CC20P1305ReadExtractor {
+    public TLS13CC20P1305ReadExtractor(ProtocolVersion protocolVersion, CipherSuite cipherSuite) {
+      super(protocolVersion, cipherSuite,
+          getSslClass("SSLCipher$T13CC20P1305ReadCipherGenerator$CC20P1305ReadCipher"));
     }
   }
 }

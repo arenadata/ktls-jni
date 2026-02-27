@@ -133,6 +133,47 @@ public class KernelTlsTest extends KernelTLSTestBase {
   }
 
   @Test
+  @EnabledOnOs({OS.LINUX})
+  void testKernelTlsReceiveSucceeds() throws Exception {
+    setupTlsHandshake(ProtocolVersion.TLS_1_2.versionName, TLS_RSA_WITH_AES_128_GCM_SHA256.suiteName);
+
+    KernelTls kernelTls = new KernelTls();
+    kernelTls.enableKernelTlsForReceive(serverSSLEngine, serverChannel);
+
+    byte[] clientPlainText = "client_hello1".getBytes(StandardCharsets.UTF_8);
+
+    final ByteBuffer clientAppOutBuffer = ByteBuffer.allocate(1024);
+    final ByteBuffer clientNetworkOutBuffer = ByteBuffer.allocate(clientSSLEngine.getSession().getPacketBufferSize());
+    clientAppOutBuffer.put(clientPlainText);
+    clientAppOutBuffer.flip();
+    clientSSLEngine.wrap(clientAppOutBuffer, clientNetworkOutBuffer);
+    clientNetworkOutBuffer.flip();
+    clientChannel.write(clientNetworkOutBuffer);
+
+    // Server reads from socket - kernel TLS decrypts the data transparently
+    final ByteBuffer serverInBuffer = ByteBuffer.allocate(1024);
+    serverChannel.read(serverInBuffer);
+    serverInBuffer.flip();
+    byte[] serverReceivedBytes = new byte[serverInBuffer.remaining()];
+    serverInBuffer.get(serverReceivedBytes);
+
+    assertArrayEquals(clientPlainText, serverReceivedBytes);
+
+    serverChannel.close();
+    clientChannel.close();
+  }
+
+  @Test
+  @EnabledOnOs({OS.MAC})
+  void testKernelTlsReceiveFailsOnMacOS() throws Exception {
+    setupTlsHandshake(ProtocolVersion.TLS_1_2.versionName, TLS_RSA_WITH_AES_128_GCM_SHA256.suiteName);
+
+    KernelTls kernelTls = new KernelTls();
+    assertThrows(KTLSEnableFailedException.class, () ->
+        kernelTls.enableKernelTlsForReceive(serverSSLEngine, serverChannel));
+  }
+
+  @Test
   @EnabledOnOs({OS.MAC})
   void testKernelTlsSendFailsOnMacOS() throws Exception {
     setupTlsHandshake(ProtocolVersion.TLS_1_2.versionName, TLS_RSA_WITH_AES_128_GCM_SHA256.suiteName);
@@ -140,6 +181,58 @@ public class KernelTlsTest extends KernelTLSTestBase {
     KernelTls kernelTls = new KernelTls();
     assertThrows(KTLSEnableFailedException.class, () ->
         kernelTls.enableKernelTlsForSend(serverSSLEngine, serverChannel));
+  }
+
+  @Test
+  @EnabledOnOs({OS.LINUX})
+  void testKernelTlsSendAndReceiveSucceeds() throws Exception {
+    setupTlsHandshake(ProtocolVersion.TLS_1_2.versionName, TLS_RSA_WITH_AES_128_GCM_SHA256.suiteName);
+
+    KernelTls kernelTls = new KernelTls();
+    kernelTls.enableKernelTlsForSend(serverSSLEngine, serverChannel);
+    kernelTls.enableKernelTlsForReceive(serverSSLEngine, serverChannel);
+
+    // TX: server writes plaintext, kernel encrypts, client unwraps with SSLEngine
+    byte[] serverPlainText = "server_hello".getBytes(StandardCharsets.UTF_8);
+
+    final ByteBuffer serverOutBuffer = ByteBuffer.allocate(1024);
+    final ByteBuffer clientNetworkInBuffer = ByteBuffer.allocate(clientSSLEngine.getSession().getPacketBufferSize());
+    final ByteBuffer clientAppInBuffer = ByteBuffer.allocate(clientSSLEngine.getSession().getApplicationBufferSize());
+
+    serverOutBuffer.put(serverPlainText);
+    serverOutBuffer.flip();
+    serverChannel.write(serverOutBuffer);
+
+    clientChannel.read(clientNetworkInBuffer);
+    clientNetworkInBuffer.flip();
+    final SSLEngineResult unwrap = clientSSLEngine.unwrap(clientNetworkInBuffer, clientAppInBuffer);
+    assertEquals(SSLEngineResult.Status.OK, unwrap.getStatus());
+    clientAppInBuffer.flip();
+    byte[] clientReceivedBytes = new byte[clientAppInBuffer.remaining()];
+    clientAppInBuffer.get(clientReceivedBytes);
+    assertArrayEquals(serverPlainText, clientReceivedBytes);
+
+    // RX: client wraps plaintext with SSLEngine, server reads plaintext (kernel decrypts)
+    byte[] clientPlainText = "client_hello".getBytes(StandardCharsets.UTF_8);
+
+    final ByteBuffer clientAppOutBuffer = ByteBuffer.allocate(1024);
+    final ByteBuffer clientNetworkOutBuffer = ByteBuffer.allocate(clientSSLEngine.getSession().getPacketBufferSize());
+    final ByteBuffer serverInBuffer = ByteBuffer.allocate(1024);
+
+    clientAppOutBuffer.put(clientPlainText);
+    clientAppOutBuffer.flip();
+    clientSSLEngine.wrap(clientAppOutBuffer, clientNetworkOutBuffer);
+    clientNetworkOutBuffer.flip();
+    clientChannel.write(clientNetworkOutBuffer);
+
+    serverChannel.read(serverInBuffer);
+    serverInBuffer.flip();
+    byte[] serverReceivedBytes = new byte[serverInBuffer.remaining()];
+    serverInBuffer.get(serverReceivedBytes);
+    assertArrayEquals(clientPlainText, serverReceivedBytes);
+
+    serverChannel.close();
+    clientChannel.close();
   }
 
   @Test

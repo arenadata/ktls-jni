@@ -94,6 +94,44 @@ class KernelTLSNativeHelper {
   }
 
   /**
+   * This function tries to enable kernelTLS for receive based on the symmetric cipher value. The supported
+   * symmetric ciphers are AES_GCM_128, AES_GCM_256 and CHACHA20_POLY1305.
+   *
+   * @param socketChannel SocketChannel object to enable kernelTLS on
+   * @param tlsParameters TlsParameters with the symmetric cipher based on which we decide if kernel TLS can be enabled.
+   * @throws KTLSEnableFailedException failed to enable ktls
+   */
+  void enableKernelTlsForReceive(SocketChannel socketChannel, TlsParameters tlsParameters)
+      throws KTLSEnableFailedException {
+    final int fd;
+    try {
+      fd = extractFd(socketChannel);
+    } catch (Exception e) {
+      throw new KTLSEnableFailedException("Error attempting to extract file descriptor from socket", e);
+    }
+    final int retCode;
+    switch (tlsParameters.symmetricCipher) {
+      case AES_GCM_128:
+        retCode = enableKernelTlsForReceive_AES_128_GCM(fd, tlsParameters.protocolVersion.code,
+            tlsParameters.iv, tlsParameters.key, tlsParameters.salt, tlsParameters.rec_seq);
+        break;
+      case AES_GCM_256:
+        retCode = enableKernelTlsForReceive_AES_256_GCM(fd, tlsParameters.protocolVersion.code,
+            tlsParameters.iv, tlsParameters.key, tlsParameters.salt, tlsParameters.rec_seq);
+        break;
+      case CHACHA20_POLY1305:
+        retCode = enableKernelTlsForReceive_CHACHA20_POLY1305(fd, tlsParameters.protocolVersion.code,
+            tlsParameters.iv, tlsParameters.key, tlsParameters.salt, tlsParameters.rec_seq);
+        break;
+      default:
+        throw new IllegalStateException();
+    }
+    if (retCode != 0) {
+      throw buildExceptionForReturnCode(retCode, tlsParameters.symmetricCipher);
+    }
+  }
+
+  /**
    * This function is to throw the respective exception based on the return value from the underlying JNI kernel TLS enable call.
    * Also used OS version and symmetric cipher version for logging the exceptions.
    *
@@ -139,6 +177,13 @@ class KernelTLSNativeHelper {
   private native int enableKernelTlsForSend_AES_256_GCM(
       int fd, int version_code, byte[] iv, byte[] key, byte[] salt, byte[] rec_seq);
   private native int enableKernelTlsForSend_CHACHA20_POLY1305(
+      int fd, int version_code, byte[] iv, byte[] key, byte[] salt, byte[] rec_seq);
+
+  private native int enableKernelTlsForReceive_AES_128_GCM(
+      int fd, int version_code, byte[] iv, byte[] key, byte[] salt, byte[] rec_seq);
+  private native int enableKernelTlsForReceive_AES_256_GCM(
+      int fd, int version_code, byte[] iv, byte[] key, byte[] salt, byte[] rec_seq);
+  private native int enableKernelTlsForReceive_CHACHA20_POLY1305(
       int fd, int version_code, byte[] iv, byte[] key, byte[] salt, byte[] rec_seq);
 
   /**
